@@ -67,3 +67,57 @@ python -m http.server 8080
 5. Дождитесь окончания и скачайте `split_result.zip` с файлами `part_1.txt`, `part_2.txt`, …
 
 Файл обрабатывается только у вас в браузере и никуда не загружается.
+
+---
+
+## Режим с бэкендом (метрики, CSV/Excel/JSONL)
+
+Для экспорта с метриками (отправитель, дата, реакции, reply_to), форматов CSV/Excel/JSONL и перекрытия блоков (overlap) используется Python-бэкенд и React-фронтенд.
+
+### Структура проекта
+
+```text
+json/
+├── backend/           # FastAPI
+│   ├── processor.py   # TelegramMessage, парсинг, контекстные блоки, overlap
+│   ├── exporters.py   # CSV, Excel, JSONL, TXT
+│   ├── main.py        # API: /process, /preview
+│   └── requirements.txt
+├── frontend/          # React + Vite + Tailwind
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── FileUploader.jsx
+│   │   │   └── ExportSettings.jsx
+│   │   └── App.jsx
+│   └── package.json
+├── shared/
+│   └── schema.json   # Схема выходных данных
+└── index.html        # Одностраничная версия (без бэкенда)
+```
+
+### Запуск бэкенда
+
+```bash
+cd backend
+pip install -r requirements.txt
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+API: `http://127.0.0.1:8000` (документация: `/docs`).
+
+### Запуск фронтенда (с прокси на бэкенд)
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Откройте `http://localhost:5173`. Запросы к `/api/*` проксируются на бэкенд (порт 8000).
+
+### Что умеет бэкенд
+
+- **Форматы:** TXT (читаемый), CSV, JSONL (для ИИ/RAG), Excel.
+- **Метрики:** дата, отправитель (ID, имя), реакции, ID ответа (reply_to). Включение/выключение в «Дополнительные настройки».
+- **Разбиение:** по количеству слов с учётом границ сообщений; overlap — последние N сообщений предыдущего блока дублируются в начале следующего (для контекста ИИ).
+- **Превью:** кнопка «Показать превью» — первые 5 сообщений с метриками в таблице перед полной выгрузкой.
