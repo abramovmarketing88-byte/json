@@ -45,17 +45,23 @@ def _extract_text(obj: Any) -> str:
     return ""
 
 
-def _parse_message(raw: dict[str, Any], chat_name: str = "") -> TelegramMessage | None:
+def _parse_message(
+    raw: dict[str, Any],
+    chat_name: str = "",
+    sender_id_override: str | int | None = None,
+    sender_name_override: str | None = None,
+) -> TelegramMessage | None:
     """Превращает сырой объект сообщения в TelegramMessage."""
     text = _extract_text(raw.get("text", ""))
-    if not text and not raw.get("photo"):  # пропускаем пустые без медиа
+    has_media = raw.get("photo") or raw.get("media_type")
+    if not text and not has_media:
         return None
 
     msg_id = raw.get("id") or raw.get("message_id") or 0
     if isinstance(msg_id, dict):
         msg_id = msg_id.get("id", 0) or 0
 
-    date_val = raw.get("date") or raw.get("timestamp")
+    date_val = raw.get("date") or raw.get("date_unixtime") or raw.get("timestamp")
     if isinstance(date_val, (int, float)):
         try:
             ts = datetime.fromtimestamp(date_val).strftime("%Y-%m-%d %H:%M:%S")
@@ -64,17 +70,25 @@ def _parse_message(raw: dict[str, Any], chat_name: str = "") -> TelegramMessage 
     else:
         ts = str(date_val or "")
 
-    from_val = raw.get("from_id") or raw.get("from") or raw.get("sender_id")
-    if isinstance(from_val, dict):
-        from_id = from_val.get("user_id") or from_val.get("id") or ""
+    if sender_id_override is not None and sender_name_override is not None:
+        from_id = sender_id_override
+        from_name = sender_name_override
     else:
-        from_id = from_val or ""
+        from_val = raw.get("from_id") or raw.get("from") or raw.get("sender_id")
+        if isinstance(from_val, dict):
+            from_id = from_val.get("user_id") or from_val.get("id") or ""
+        else:
+            from_id = from_val or ""
+        from_name = raw.get("from_name") or raw.get("sender") or raw.get("forward_sender_name") or ""
+        if not from_name and isinstance(raw.get("from"), str):
+            from_name = raw["from"]
 
-    from_name = raw.get("from_name") or raw.get("sender") or raw.get("forward_sender_name") or ""
-    if not from_name and isinstance(raw.get("from"), str):
-        from_name = raw["from"]
-
-    reply_to = raw.get("reply_to_message_id") or raw.get("reply_to") or raw.get("reply_to_id")
+    reply_to = (
+        raw.get("reply_to_message_id")
+        or raw.get("reply_to_msg_id")
+        or raw.get("reply_to")
+        or raw.get("reply_to_id")
+    )
     if isinstance(reply_to, dict):
         reply_to = reply_to.get("message_id") or reply_to.get("id")
 
@@ -112,13 +126,19 @@ def _iter_messages_from_chat(chat: dict[str, Any]) -> Iterator[dict[str, Any]]:
 
 def parse_telegram_json(data: dict[str, Any]) -> list[TelegramMessage]:
     """
-    Парсит result.json (полный экспорт или один чат).
+    Парсит result.json (полный экспорт, один чат или telegram_scrape).
+    Поддерживает: Telegram Desktop (chats.list), один чат (messages), telegram_scrape (channels).
     Возвращает список TelegramMessage в порядке по времени.
     """
     out: list[TelegramMessage] = []
     chats_raw: list[dict] = []
+    use_channel_sender = False  # для формата channels — подставлять channel_id/channel_title
 
-    if "chats" in data:
+    if "channels" in data:
+        # Формат telegram_scrape: { "channels": [ { "channel", "channel_id", "channel_title", "messages" } ] }
+        chats_raw = data["channels"] if isinstance(data["channels"], list) else []
+        use_channel_sender = True
+    elif "chats" in data:
         cl = data["chats"]
         if isinstance(cl, dict) and "list" in cl:
             chats_raw = cl["list"]
@@ -132,9 +152,15 @@ def parse_telegram_json(data: dict[str, Any]) -> list[TelegramMessage]:
         return out
 
     for chat in chats_raw:
-        name = chat.get("name") or chat.get("title") or ""
+        name = chat.get("name") or chat.get("title") or chat.get("channel_title") or ""
+        sender_id = chat.get("channel_id") if use_channel_sender else None
+        sender_name = chat.get("channel_title") or name if use_channel_sender else None
+
         for raw in _iter_messages_from_chat(chat):
-            msg = _parse_message(raw, name)
+            if use_channel_sender and sender_id is not None and sender_name is not None:
+                msg = _parse_message(raw, name, sender_id_override=sender_id, sender_name_override=sender_name)
+            else:
+                msg = _parse_message(raw, name)
             if msg:
                 out.append(msg)
 
