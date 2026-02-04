@@ -1,0 +1,5 @@
+{
+  "description": "Telegram JSON history splitter - Converts large result.json into multiple text chunks using streaming parsing.",
+  "requestFramePermissions": [],
+  "name": "JSON разбивка"
+}
