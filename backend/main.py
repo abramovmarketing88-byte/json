@@ -43,6 +43,8 @@ async def process(
     include_sender: str = Form("true"),
     include_reactions: str = Form("true"),
     include_reply_id: str = Form("true"),
+    include_views: str = Form("true"),
+    include_reactions_breakdown: str = Form("true"),
 ):
     """Принимает JSON, возвращает ZIP с частями в выбранном формате."""
     if not file.filename or not file.filename.lower().endswith(".json"):
@@ -57,6 +59,8 @@ async def process(
         sender_info=_form_bool(include_sender),
         reactions=_form_bool(include_reactions),
         reply_ids=_form_bool(include_reply_id),
+        views=_form_bool(include_views),
+        reaction_breakdown=_form_bool(include_reactions_breakdown),
     )
 
     try:

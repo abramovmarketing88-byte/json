@@ -10,7 +10,13 @@
     "sender_name": { "type": "string", "description": "Имя/username отправителя" },
     "text_content": { "type": "string", "description": "Текст сообщения" },
     "reply_to_id": { "type": ["integer", "null"], "description": "ID сообщения, на которое ответ" },
-    "reactions_count": { "type": "integer", "description": "Количество реакций" }
+    "reactions_count": { "type": "integer", "description": "Количество реакций" },
+    "views": { "type": "integer", "description": "Количество просмотров" },
+    "reactions_breakdown": {
+      "type": "object",
+      "description": "Реакции по emoji",
+      "additionalProperties": { "type": "integer" }
+    }
   },
   "required": ["message_id", "text_content"]
 }

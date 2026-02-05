@@ -18,10 +18,14 @@ export default function ExportSettings({
   includeSender,
   includeReactions,
   includeReplyId,
+  includeViews,
+  includeReactionsBreakdown,
   onIncludeTimestampChange,
   onIncludeSenderChange,
   onIncludeReactionsChange,
   onIncludeReplyIdChange,
+  onIncludeViewsChange,
+  onIncludeReactionsBreakdownChange,
   disabled,
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -113,6 +117,26 @@ export default function ExportSettings({
                 className="rounded border-gray-300"
               />
               <span className="text-sm text-gray-700">Реакции</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeReactionsBreakdown}
+                onChange={(e) => onIncludeReactionsBreakdownChange(e.target.checked)}
+                disabled={disabled}
+                className="rounded border-gray-300"
+              />
+              <span className="text-sm text-gray-700">Реакции (разбивка по emoji)</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeViews}
+                onChange={(e) => onIncludeViewsChange(e.target.checked)}
+                disabled={disabled}
+                className="rounded border-gray-300"
+              />
+              <span className="text-sm text-gray-700">Просмотры</span>
             </label>
             <label className="flex items-center gap-2 cursor-pointer">
               <input

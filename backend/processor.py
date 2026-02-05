@@ -20,6 +20,8 @@ class TelegramMessage:
     sender_name: str = ""
     reply_to_id: int | None = None
     reactions_count: int = 0
+    views: int = 0
+    reactions_breakdown: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -30,6 +32,8 @@ class TelegramMessage:
             "text_content": self.text_content,
             "reply_to_id": self.reply_to_id,
             "reactions_count": self.reactions_count,
+            "views": self.views,
+            "reactions_breakdown": self.reactions_breakdown,
         }
 
 
@@ -92,14 +96,8 @@ def _parse_message(
     if isinstance(reply_to, dict):
         reply_to = reply_to.get("message_id") or reply_to.get("id")
 
-    reactions = raw.get("reactions") or raw.get("reactions_count") or []
-    if isinstance(reactions, list):
-        reactions_count = sum(
-            r.get("count", 1) if isinstance(r, dict) else 1
-            for r in reactions
-        )
-    else:
-        reactions_count = int(reactions) if reactions else 0
+    views = _parse_views(raw)
+    reactions_count, reactions_breakdown = _parse_reactions(raw)
 
     return TelegramMessage(
         message_id=int(msg_id) if msg_id else 0,
@@ -109,7 +107,75 @@ def _parse_message(
         sender_name=from_name or str(from_id) or "?",
         reply_to_id=int(reply_to) if reply_to is not None else None,
         reactions_count=reactions_count,
+        views=views,
+        reactions_breakdown=reactions_breakdown,
     )
+
+
+def _parse_views(raw: dict[str, Any]) -> int:
+    """Достаёт количество просмотров из возможных полей экспорта."""
+    for key in ("views", "views_count", "view_count", "viewsCount", "post_views"):
+        if key in raw:
+            value = raw.get(key)
+            if isinstance(value, dict):
+                value = value.get("count") or value.get("views")
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
+def _parse_reactions(raw: dict[str, Any]) -> tuple[int, dict[str, int]]:
+    """Достаёт реакции и раскладывает их по emoji."""
+    reactions_raw = (
+        raw.get("reactions")
+        or raw.get("reactions_count")
+        or raw.get("reaction")
+        or []
+    )
+    breakdown: dict[str, int] = {}
+    reactions_list: list[Any] = []
+
+    if isinstance(reactions_raw, dict):
+        if isinstance(reactions_raw.get("results"), list):
+            reactions_list = reactions_raw["results"]
+        elif "emoji" in reactions_raw or "reaction" in reactions_raw:
+            reactions_list = [reactions_raw]
+        else:
+            try:
+                return int(reactions_raw.get("count") or 0), breakdown
+            except (TypeError, ValueError):
+                return 0, breakdown
+    elif isinstance(reactions_raw, list):
+        reactions_list = reactions_raw
+    else:
+        try:
+            return int(reactions_raw) if reactions_raw else 0, breakdown
+        except (TypeError, ValueError):
+            return 0, breakdown
+
+    for item in reactions_list:
+        emoji = None
+        count = 1
+        if isinstance(item, dict):
+            emoji = item.get("emoji") or item.get("reaction") or item.get("title") or item.get("name")
+            if isinstance(emoji, dict):
+                emoji = emoji.get("emoji") or emoji.get("reaction")
+            if "count" in item:
+                count = item.get("count") or 0
+            elif "value" in item:
+                count = item.get("value") or 0
+        elif isinstance(item, str):
+            emoji = item
+        if emoji:
+            try:
+                breakdown[emoji] = breakdown.get(emoji, 0) + int(count)
+            except (TypeError, ValueError):
+                breakdown[emoji] = breakdown.get(emoji, 0) + 1
+
+    reactions_count = sum(breakdown.values())
+    return reactions_count, breakdown
 
 
 def _iter_messages_from_chat(chat: dict[str, Any]) -> Iterator[dict[str, Any]]:

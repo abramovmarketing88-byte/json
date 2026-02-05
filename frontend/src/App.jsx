@@ -29,6 +29,8 @@ export default function App() {
   const [includeSender, setIncludeSender] = useState(true);
   const [includeReactions, setIncludeReactions] = useState(true);
   const [includeReplyId, setIncludeReplyId] = useState(true);
+  const [includeViews, setIncludeViews] = useState(true);
+  const [includeReactionsBreakdown, setIncludeReactionsBreakdown] = useState(true);
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState(null);
   const [processing, setProcessing] = useState(false);
@@ -74,6 +76,8 @@ export default function App() {
       form.append('include_sender', includeSender);
       form.append('include_reactions', includeReactions);
       form.append('include_reply_id', includeReplyId);
+      form.append('include_views', includeViews);
+      form.append('include_reactions_breakdown', includeReactionsBreakdown);
 
       const r = await fetch(`${API_BASE}/process`, {
         method: 'POST',
@@ -97,7 +101,18 @@ export default function App() {
     } finally {
       setProcessing(false);
     }
-  }, [file, format, wordCount, overlap, includeTimestamp, includeSender, includeReactions, includeReplyId]);
+  }, [
+    file,
+    format,
+    wordCount,
+    overlap,
+    includeTimestamp,
+    includeSender,
+    includeReactions,
+    includeReplyId,
+    includeViews,
+    includeReactionsBreakdown,
+  ]);
 
   const [dragActive, setDragActive] = useState(false);
   const onDragOver = (e) => {
@@ -159,6 +174,10 @@ export default function App() {
             onIncludeReactionsChange={setIncludeReactions}
             includeReplyId={includeReplyId}
             onIncludeReplyIdChange={setIncludeReplyId}
+            includeViews={includeViews}
+            onIncludeViewsChange={setIncludeViews}
+            includeReactionsBreakdown={includeReactionsBreakdown}
+            onIncludeReactionsBreakdownChange={setIncludeReactionsBreakdown}
             disabled={processing}
           />
 
@@ -182,6 +201,8 @@ export default function App() {
                         <th className="px-3 py-2 text-left">Отправитель</th>
                         <th className="px-3 py-2 text-left">Текст</th>
                         <th className="px-3 py-2 text-left">Реакции</th>
+                        <th className="px-3 py-2 text-left">Просмотры</th>
+                        <th className="px-3 py-2 text-left">Реакции (детали)</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -192,6 +213,14 @@ export default function App() {
                           <td className="px-3 py-2">{row.sender_name || row.sender_id || '—'}</td>
                           <td className="px-3 py-2 max-w-xs truncate">{row.text_content || '—'}</td>
                           <td className="px-3 py-2">{row.reactions_count ?? '—'}</td>
+                          <td className="px-3 py-2">{row.views ?? '—'}</td>
+                          <td className="px-3 py-2">
+                            {row.reactions_breakdown
+                              ? Object.entries(row.reactions_breakdown)
+                                  .map(([emoji, count]) => `${emoji}:${count}`)
+                                  .join(', ')
+                              : '—'}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
