@@ -31,9 +31,36 @@
             return '';
         }
 
+        function extractViewsCount(segment) {
+            var viewsMatch = segment.match(/"views"\s*:\s*(\d+)/);
+            if (viewsMatch) return parseInt(viewsMatch[1], 10);
+            var viewsCountMatch = segment.match(/"views_count"\s*:\s*(\d+)/);
+            return viewsCountMatch ? parseInt(viewsCountMatch[1], 10) : 0;
+        }
+
+        function extractReactionsCount(segment) {
+            var reactionsMatch = segment.match(/"reactions"\s*:\s*(\[[\s\S]*?\])/);
+            if (reactionsMatch) {
+                try {
+                    var reactions = JSON.parse(reactionsMatch[1]);
+                    if (Array.isArray(reactions)) {
+                        return reactions.reduce(function (sum, reaction) {
+                            if (reaction && typeof reaction === 'object' && 'count' in reaction) {
+                                return sum + Number(reaction.count || 0);
+                            }
+                            return sum + 1;
+                        }, 0);
+                    }
+                } catch (err) {}
+            }
+            var reactionsCountMatch = segment.match(/"reactions_count"\s*:\s*(\d+)/);
+            return reactionsCountMatch ? parseInt(reactionsCountMatch[1], 10) : 0;
+        }
+
         function App() {
             const [file, setFile] = useState(null);
             const [chunkSize, setChunkSize] = useState(100000);
+            const [includeMetrics, setIncludeMetrics] = useState(false);
             const [isProcessing, setIsProcessing] = useState(false);
             const [progress, setProgress] = useState(0);
             const [error, setError] = useState(null);
@@ -84,40 +111,85 @@
                     const decoder = new TextDecoder();
                     let partCount = 1;
                     let wordBuffer = [];
+                    let metricsBuffer = [];
                     let totalProcessedBytes = 0;
-                    let leftover = '';
-                    const regex = /"text":\s*(\[[^\]]*\]|"[^"]*")/g;
+                    let buffer = '';
+                    const textRegex = /"text":\s*(\[[^\]]*\]|"[^"]*")/g;
+
+                    const flushBuffers = function () {
+                        zip.file('part_' + partCount + '.txt', wordBuffer.join(' '));
+                        if (includeMetrics && metricsBuffer.length > 0) {
+                            const jsonl = metricsBuffer.map(function (entry) {
+                                return JSON.stringify(entry);
+                            }).join('\n');
+                            zip.file('part_' + partCount + '.jsonl', jsonl);
+                        }
+                        setStatus('Создан файл part_' + partCount + '.txt' + (includeMetrics ? ' и метрики' : ''));
+                        wordBuffer = [];
+                        metricsBuffer = [];
+                        partCount++;
+                    };
+
+                    const processSegment = function (rawText, segment) {
+                        try {
+                            const textValue = JSON.parse(rawText);
+                            const extracted = extractTextContent(textValue).trim();
+                            if (!extracted) return;
+                            const words = extracted.split(/\s+/);
+                            wordBuffer.push.apply(wordBuffer, words);
+                            if (includeMetrics) {
+                                metricsBuffer.push({
+                                    text_content: extracted,
+                                    views_count: extractViewsCount(segment),
+                                    reactions_count: extractReactionsCount(segment),
+                                });
+                            }
+                            if (wordBuffer.length >= chunkSize) {
+                                flushBuffers();
+                            }
+                        } catch (err) {}
+                    };
 
                     while (true) {
                         const { done, value } = await reader.read();
                         if (done) break;
                         totalProcessedBytes += value.byteLength;
                         setProgress(Math.round((totalProcessedBytes / file.size) * 100));
-                        const chunk = leftover + decoder.decode(value, { stream: true });
+                        buffer += decoder.decode(value, { stream: true });
+                        const matches = [];
+                        textRegex.lastIndex = 0;
                         let match;
-                        let lastIndex = 0;
-                        while ((match = regex.exec(chunk)) !== null) {
-                            try {
-                                const textValue = JSON.parse(match[1]);
-                                const extracted = extractTextContent(textValue);
-                                if (extracted.trim()) {
-                                    const words = extracted.trim().split(/\s+/);
-                                    wordBuffer.push.apply(wordBuffer, words);
-                                    if (wordBuffer.length >= chunkSize) {
-                                        zip.file('part_' + partCount + '.txt', wordBuffer.join(' '));
-                                        setStatus('Создан файл part_' + partCount + '.txt');
-                                        wordBuffer = [];
-                                        partCount++;
-                                    }
-                                }
-                            } catch (err) {}
-                            lastIndex = regex.lastIndex;
+                        while ((match = textRegex.exec(buffer)) !== null) {
+                            matches.push({ index: match.index, rawText: match[1] });
                         }
-                        leftover = chunk.slice(lastIndex);
+                        for (let i = 0; i < matches.length - 1; i++) {
+                            const current = matches[i];
+                            const nextIndex = matches[i + 1].index;
+                            const segment = buffer.slice(current.index, nextIndex);
+                            processSegment(current.rawText, segment);
+                        }
+                        if (matches.length > 0) {
+                            const lastMatch = matches[matches.length - 1];
+                            buffer = buffer.slice(lastMatch.index);
+                        } else if (buffer.length > 20000) {
+                            buffer = buffer.slice(-20000);
+                        }
+                    }
+
+                    const finalMatches = [];
+                    textRegex.lastIndex = 0;
+                    let finalMatch;
+                    while ((finalMatch = textRegex.exec(buffer)) !== null) {
+                        finalMatches.push({ index: finalMatch.index, rawText: finalMatch[1] });
+                    }
+                    if (finalMatches.length > 0) {
+                        const last = finalMatches[finalMatches.length - 1];
+                        const segment = buffer.slice(last.index);
+                        processSegment(last.rawText, segment);
                     }
 
                     if (wordBuffer.length > 0) {
-                        zip.file('part_' + partCount + '.txt', wordBuffer.join(' '));
+                        flushBuffers();
                     }
                     if (partCount === 1 && wordBuffer.length === 0) {
                         throw new Error('Текст не найден. Убедитесь, что это корректный файл экспорта Telegram.');
@@ -197,6 +269,21 @@
                                     disabled={isProcessing}
                                     className="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
                                 />
+                            </div>
+                            <div className="space-y-2">
+                                <label className="flex items-center gap-2 text-sm text-gray-700">
+                                    <input
+                                        type="checkbox"
+                                        checked={includeMetrics}
+                                        onChange={(e) => setIncludeMetrics(e.target.checked)}
+                                        disabled={isProcessing}
+                                        className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                    />
+                                    Включить метрики (просмотры/реакции) в JSONL-файлы
+                                </label>
+                                <p className="text-xs text-gray-500">
+                                    Метрики сохраняются рядом с part_*.txt как part_*.jsonl. Для расширенного экспорта используйте режим бэкенда.
+                                </p>
                             </div>
                             {isProcessing && (
                                 <div className="space-y-3">

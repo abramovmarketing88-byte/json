@@ -22,9 +22,40 @@ function extractTextContent(text: any): string {
   return '';
 }
 
+function extractViewsCount(segment: string): number {
+  const viewsMatch = segment.match(/"views"\s*:\s*(\d+)/);
+  if (viewsMatch) {
+    return parseInt(viewsMatch[1], 10);
+  }
+  const viewsCountMatch = segment.match(/"views_count"\s*:\s*(\d+)/);
+  return viewsCountMatch ? parseInt(viewsCountMatch[1], 10) : 0;
+}
+
+function extractReactionsCount(segment: string): number {
+  const reactionsMatch = segment.match(/"reactions"\s*:\s*(\[[\s\S]*?\])/);
+  if (reactionsMatch) {
+    try {
+      const reactions = JSON.parse(reactionsMatch[1]);
+      if (Array.isArray(reactions)) {
+        return reactions.reduce((sum, reaction) => {
+          if (reaction && typeof reaction === 'object' && 'count' in reaction) {
+            return sum + Number((reaction as { count: number }).count || 0);
+          }
+          return sum + 1;
+        }, 0);
+      }
+    } catch (e) {
+      // ignore parsing errors and fall back to reactions_count
+    }
+  }
+  const reactionsCountMatch = segment.match(/"reactions_count"\s*:\s*(\d+)/);
+  return reactionsCountMatch ? parseInt(reactionsCountMatch[1], 10) : 0;
+}
+
 const App: React.FC = () => {
   const [file, setFile] = useState<File | null>(null);
   const [chunkSize, setChunkSize] = useState<number>(100000);
+  const [includeMetrics, setIncludeMetrics] = useState<boolean>(false);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [progress, setProgress] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
@@ -82,13 +113,49 @@ const App: React.FC = () => {
       
       let partCount = 1;
       let wordBuffer: string[] = [];
+      let metricsBuffer: Array<{ text_content: string; views_count: number; reactions_count: number }> = [];
       let totalProcessedBytes = 0;
-      let leftover = '';
+      let buffer = '';
 
       // We use a simplified streaming parser for very large Telegram JSON files.
       // Standard JSON.parse(huge_string) would crash.
       // We look for "text": patterns iteratively.
-      
+
+      const textRegex = /"text":\s*(\[[^\]]*\]|"[^"]*")/g;
+      const flushBuffers = () => {
+        zip.file(`part_${partCount}.txt`, wordBuffer.join(' '));
+        if (includeMetrics && metricsBuffer.length > 0) {
+          const jsonl = metricsBuffer.map((entry) => JSON.stringify(entry)).join('\n');
+          zip.file(`part_${partCount}.jsonl`, jsonl);
+        }
+        setStatus(`Создан файл part_${partCount}.txt${includeMetrics ? ' и метрики' : ''}`);
+        wordBuffer = [];
+        metricsBuffer = [];
+        partCount++;
+      };
+
+      const processSegment = (rawText: string, segment: string) => {
+        try {
+          const textValue = JSON.parse(rawText);
+          const extracted = extractTextContent(textValue).trim();
+          if (!extracted) return;
+          const words = extracted.split(/\s+/);
+          wordBuffer.push(...words);
+          if (includeMetrics) {
+            metricsBuffer.push({
+              text_content: extracted,
+              views_count: extractViewsCount(segment),
+              reactions_count: extractReactionsCount(segment),
+            });
+          }
+          if (wordBuffer.length >= chunkSize) {
+            flushBuffers();
+          }
+        } catch (e) {
+          // If parsing failed (e.g. truncated JSON in chunk), we catch and continue
+        }
+      };
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -96,46 +163,45 @@ const App: React.FC = () => {
         totalProcessedBytes += value.byteLength;
         setProgress(Math.round((totalProcessedBytes / file.size) * 100));
         
-        const chunk = leftover + decoder.decode(value, { stream: true });
-        
-        // This is a naive but effective stream parser for Telegram's structure
-        // that avoids loading the whole JSON object tree into memory.
-        // It looks for the start of message objects.
-        const regex = /"text":\s*(\[[^\]]*\]|"[^"]*")/g;
-        let match;
-        let lastIndex = 0;
+        buffer += decoder.decode(value, { stream: true });
 
-        while ((match = regex.exec(chunk)) !== null) {
-          try {
-            // Attempt to parse the specific text field value
-            const textValue = JSON.parse(match[1]);
-            const extracted = extractTextContent(textValue);
-            
-            if (extracted.trim()) {
-              const words = extracted.trim().split(/\s+/);
-              wordBuffer.push(...words);
-
-              // If buffer reached chunk size, save to zip
-              if (wordBuffer.length >= chunkSize) {
-                zip.file(`part_${partCount}.txt`, wordBuffer.join(' '));
-                setStatus(`Создан файл part_${partCount}.txt`);
-                wordBuffer = [];
-                partCount++;
-              }
-            }
-          } catch (e) {
-            // If parsing failed (e.g. truncated JSON in chunk), we catch and continue
-          }
-          lastIndex = regex.lastIndex;
+        const matches: Array<{ index: number; rawText: string }> = [];
+        textRegex.lastIndex = 0;
+        let match: RegExpExecArray | null;
+        while ((match = textRegex.exec(buffer)) !== null) {
+          matches.push({ index: match.index, rawText: match[1] });
         }
 
-        // Keep the rest of the string for the next chunk
-        leftover = chunk.slice(lastIndex);
+        for (let i = 0; i < matches.length - 1; i++) {
+          const current = matches[i];
+          const nextIndex = matches[i + 1].index;
+          const segment = buffer.slice(current.index, nextIndex);
+          processSegment(current.rawText, segment);
+        }
+
+        if (matches.length > 0) {
+          const lastMatch = matches[matches.length - 1];
+          buffer = buffer.slice(lastMatch.index);
+        } else if (buffer.length > 20000) {
+          buffer = buffer.slice(-20000);
+        }
+      }
+
+      const finalMatches: Array<{ index: number; rawText: string }> = [];
+      textRegex.lastIndex = 0;
+      let finalMatch: RegExpExecArray | null;
+      while ((finalMatch = textRegex.exec(buffer)) !== null) {
+        finalMatches.push({ index: finalMatch.index, rawText: finalMatch[1] });
+      }
+      if (finalMatches.length > 0) {
+        const last = finalMatches[finalMatches.length - 1];
+        const segment = buffer.slice(last.index);
+        processSegment(last.rawText, segment);
       }
 
       // Handle remaining words
       if (wordBuffer.length > 0) {
-        zip.file(`part_${partCount}.txt`, wordBuffer.join(' '));
+        flushBuffers();
       }
 
       if (partCount === 1 && wordBuffer.length === 0) {
@@ -226,6 +292,22 @@ const App: React.FC = () => {
               disabled={isProcessing}
               className="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
             />
+          </div>
+
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={includeMetrics}
+                onChange={(e) => setIncludeMetrics(e.target.checked)}
+                disabled={isProcessing}
+                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              Включить метрики (просмотры/реакции) в JSONL-файлы
+            </label>
+            <p className="text-xs text-gray-500">
+              Метрики сохраняются рядом с part_*.txt как part_*.jsonl. Для расширенного экспорта используйте режим бэкенда.
+            </p>
           </div>
 
           {/* Progress / Status Block */}
