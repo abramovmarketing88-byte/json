@@ -17,11 +17,14 @@ class ExportOptions:
     include_sender: bool = True
     include_reactions: bool = True
     include_reply_id: bool = True
+    include_views: bool = True
+    include_reaction_breakdown: bool = True
 
     @classmethod
     def all_on(cls) -> "ExportOptions":
         o = cls()
         o.include_timestamp = o.include_sender = o.include_reactions = o.include_reply_id = True
+        o.include_views = o.include_reaction_breakdown = True
         return o
 
     @classmethod
@@ -31,12 +34,16 @@ class ExportOptions:
         sender_info: bool = True,
         reactions: bool = True,
         reply_ids: bool = True,
+        views: bool = True,
+        reaction_breakdown: bool = True,
     ) -> "ExportOptions":
         o = cls()
         o.include_timestamp = timestamps
         o.include_sender = sender_info
         o.include_reactions = reactions
         o.include_reply_id = reply_ids
+        o.include_views = views
+        o.include_reaction_breakdown = reaction_breakdown
         return o
 
 
@@ -51,6 +58,17 @@ def _row(msg: TelegramMessage, opts: ExportOptions) -> dict[str, Any]:
         d["reply_to_id"] = msg.reply_to_id
     if opts.include_reactions:
         d["reactions_count"] = msg.reactions_count
+    if opts.include_views:
+        d["views"] = msg.views
+    if opts.include_reaction_breakdown:
+        d["reactions_breakdown"] = msg.reactions_breakdown
+    return d
+
+
+def _row_flat(msg: TelegramMessage, opts: ExportOptions) -> dict[str, Any]:
+    d = _row(msg, opts)
+    if "reactions_breakdown" in d:
+        d["reactions_json"] = json.dumps(d.pop("reactions_breakdown"), ensure_ascii=False)
     return d
 
 
@@ -58,13 +76,13 @@ def export_csv(messages: list[TelegramMessage], opts: ExportOptions) -> str:
     """Экспорт в CSV (строка)."""
     if not messages:
         return ""
-    row0 = _row(messages[0], opts)
+    row0 = _row_flat(messages[0], opts)
     fieldnames = list(row0.keys())
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=fieldnames, lineterminator="\n")
     writer.writeheader()
     for msg in messages:
-        writer.writerow(_row(msg, opts))
+        writer.writerow(_row_flat(msg, opts))
     return buf.getvalue()
 
 
@@ -90,6 +108,11 @@ def export_txt(messages: list[TelegramMessage], opts: ExportOptions) -> str:
         parts.append(msg.text_content or "")
         if opts.include_reactions and msg.reactions_count:
             parts.append(f" {{Reactions: {msg.reactions_count}}}")
+        if opts.include_reaction_breakdown and msg.reactions_breakdown:
+            breakdown = ", ".join(f"{emoji}:{count}" for emoji, count in msg.reactions_breakdown.items())
+            parts.append(f" {{Reactions breakdown: {breakdown}}}")
+        if opts.include_views and msg.views:
+            parts.append(f" {{Views: {msg.views}}}")
         if opts.include_reply_id and msg.reply_to_id is not None:
             parts.append(f" [reply_to={msg.reply_to_id}]")
         out.append(" ".join(parts))
@@ -114,11 +137,11 @@ def export_excel(messages: list[TelegramMessage], opts: ExportOptions) -> bytes:
         wb.save(buf)
         return buf.getvalue()
 
-    row0 = _row(messages[0], opts)
+    row0 = _row_flat(messages[0], opts)
     headers = list(row0.keys())
     ws.append(headers)
     for msg in messages:
-        ws.append([_row(msg, opts).get(h) for h in headers])
+        ws.append([_row_flat(msg, opts).get(h) for h in headers])
 
     buf = io.BytesIO()
     wb.save(buf)
